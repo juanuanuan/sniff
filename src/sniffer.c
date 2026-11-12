@@ -156,7 +156,7 @@ void gotpacket(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
 int grabber(const char *dev, const char *expr){
     char errbuff[PCAP_ERRBUF_SIZE];
     pcap_t *handle = pcap_open_live(dev, BUFSIZZ, 1, 1000, errbuff);
-    struct bpf_program fp; //for filtering 
+    struct bpf_program fp; //for filtering udp
     if(handle == NULL){
         fprintf(stderr, "Could not open Device: %s\n", errbuff);
         return -1;
