@@ -12,20 +12,20 @@
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
-#include <arpa/inet.h>
 #define BUFSIZZ 65535
+#define ICMP_HDR_LEN 8
 
 int finder(){
     char errbuff[PCAP_ERRBUF_SIZE];
     pcap_if_t *alldevs;
-    if(pcap_findalldevs(&alldevs, errbuff) == -1){
+    if(pcap_findalldevs(&alldevs, errbuff) == -1){ // find the devices 
         fprintf(stderr, "Could not find device: %s\n", errbuff);
         return -1;
     }
 
-    pcap_if_t *d = alldevs;
+    pcap_if_t *d = alldevs; // pointer to the head of alldevs
     
-    for(;d != NULL; d = d->next){
+    for(;d != NULL; d = d->next){  // go through the list to inspect all devices
         fprintf(stdout, "Device: %s\n", d->name);
         fflush(stdout);
     }
@@ -34,7 +34,8 @@ int finder(){
     return 0;
 }
 
-void handtcp(const u_char *segment, bpf_u_int32 len){
+// handtcp, handudp, handicmp are algorithms that identify and handle the packet communication protocol
+void handtcp(const u_char *segment, bpf_u_int32 len){ 
     if(len < sizeof(struct tcphdr)){
         fprintf(stderr, "TCP Length Error\n");
         return;
@@ -59,7 +60,7 @@ void handtcp(const u_char *segment, bpf_u_int32 len){
     fflush(stdout);
 }
 
-void handudp(const u_char *segment, bpf_u_int32 len){
+void handudp(const u_char *segment, bpf_u_int32 len){ 
     if(len < sizeof(struct udphdr)){
         fprintf(stderr, "UDP Length Error\n");
         return;
@@ -72,17 +73,17 @@ void handudp(const u_char *segment, bpf_u_int32 len){
 }
 
 void handicmp(const u_char *segment, bpf_u_int32 len){
-    if(len < sizeof(struct icmp)){
-        fprintf(stderr, "UDP Length Error\n");
+    if(len < ICMP_HDR_LEN){
+        fprintf(stderr, "ICMP Length Error\n");
         return;
     }
 
     const struct icmp *ic = (const struct icmp *) segment; 
-    fprintf(stdout, "ICMP Type: %u\n", ntohs(ic->icmp_type));
+    fprintf(stdout, "ICMP Type: %u\n", ic->icmp_type);
     fflush(stdout);
 }
 
-
+// algorithm that, once that the packege is secured, identifies the main information (lenght, ip, macs, protocol, etc)
 void gotpacket(u_char *args, const struct pcap_pkthdr *header, const u_char *packet){
     (void)args;
     const struct ether_header *eth = (const struct ether_header *) packet;
@@ -90,16 +91,16 @@ void gotpacket(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
     fprintf(stdout, "Header Length: %u\n", header->len);
     fprintf(stdout, "Header Caplen: %u\n", header->caplen);
     fprintf(stdout, "Ether info:\n");
-    fprintf(stdout, "dhost: %s\n", ether_ntoa((const struct ether_addr *) eth->ether_dhost)); // macs
-    fprintf(stdout, "shost: %s\n", ether_ntoa((const struct ether_addr *) eth->ether_shost));
+    fprintf(stdout, "dhost: %s\n", ether_ntoa((const struct ether_addr *) eth->ether_dhost)); // source mac addr
+    fprintf(stdout, "shost: %s\n", ether_ntoa((const struct ether_addr *) eth->ether_shost)); // destination mac addr
     if(ntohs(eth->ether_type) == ETHERTYPE_IP){
         fprintf(stdout, "IPv4: %04x\n", ntohs(eth->ether_type));
         if(header->caplen >= sizeof(struct ether_header) + sizeof(struct ip)){
             const struct ip *ipaddr = (const struct ip *)(packet + sizeof(struct ether_header)); // we have to look 14 bytes ahead to serch for the ip addr
             char src_buf[INET_ADDRSTRLEN];
             char dst_buf[INET_ADDRSTRLEN];
-            const char *src = inet_ntop(AF_INET, &ipaddr->ip_src, src_buf, sizeof(src_buf));
-            const char *dst = inet_ntop(AF_INET, &ipaddr->ip_dst, dst_buf, sizeof(dst_buf));
+            const char *src = inet_ntop(AF_INET, &ipaddr->ip_src, src_buf, sizeof(src_buf)); // source ip addr
+            const char *dst = inet_ntop(AF_INET, &ipaddr->ip_dst, dst_buf, sizeof(dst_buf)); // destination ip addr
             if(src == NULL){
                 fprintf(stderr, "SRC might not be defined.\n");
                 return;
@@ -110,8 +111,9 @@ void gotpacket(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
             }
             fprintf(stdout, "src ipaddr: %s\n", src);
             fprintf(stdout, "dst ipaddr: %s\n", dst);
+            // identification of ip protocol (tcp, udp or icmp)
             if(ipaddr->ip_p == IPPROTO_TCP){
-                u_int offset = sizeof(struct ether_header) + ipaddr->ip_hl * 4;
+                u_int offset = sizeof(struct ether_header) + ipaddr->ip_hl * 4; // verify on the addr if the caplen and hl are enough to handle the protocol. otherwise we wouldn't be able to identify the protocol
                 if((ipaddr->ip_hl >= 5) && header->caplen >= offset){
                     handtcp(packet + offset, header->caplen - offset);
                 } else if(!(ipaddr->ip_hl >= 5)){
@@ -147,12 +149,12 @@ void gotpacket(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
                 fprintf(stdout, "Other: %u\n", ipaddr->ip_p);
             }
         } else {
-            fprintf(stderr, "Caplen is too small.");
+            fprintf(stderr, "Caplen is too small.\n");
             return;
         }
     } else fprintf(stdout, "Not Ipv4.\n"); fflush(stdout);
 }
-
+// algorithm that secures each package 
 int grabber(const char *dev, const char *expr){
     char errbuff[PCAP_ERRBUF_SIZE];
     pcap_t *handle = pcap_open_live(dev, BUFSIZZ, 1, 1000, errbuff);
@@ -162,7 +164,7 @@ int grabber(const char *dev, const char *expr){
         return -1;
     }
     if(expr != NULL){
-        if(pcap_compile(handle, &fp, expr, 0, PCAP_NETMASK_UNKNOWN) == -1){
+        if(pcap_compile(handle, &fp, expr, 0, PCAP_NETMASK_UNKNOWN) == -1){ // start compiling 
         fprintf(stderr, "Compilation Error: %s\n", pcap_geterr(handle));
         pcap_close(handle);
         return -1;
@@ -182,7 +184,7 @@ int grabber(const char *dev, const char *expr){
         pcap_close(handle);
         return -1;
     }
-    if(pcap_loop(handle, 10, gotpacket, NULL) == -1){
+    if(pcap_loop(handle, -1, gotpacket, NULL) == -1){ // -1 for infinite grabbing
         fprintf(stderr, "Could not loop: %s\n", pcap_geterr(handle));
         pcap_close(handle);
         return -1;
