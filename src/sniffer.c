@@ -1,22 +1,7 @@
 #include "lib.h"
-#include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <pcap.h>
-#include <net/ethernet.h>
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/tcp.h>
-#include <netinet/udp.h>
-#include <netinet/ip_icmp.h>
-#define BUFSIZZ 65535
-#define ICMP_HDR_LEN 8
 
 int finder(){
-    char errbuff[PCAP_ERRBUF_SIZE];
+    char errbuff[PCAP_ERRBUF_SIZE]; 
     pcap_if_t *alldevs;
     if(pcap_findalldevs(&alldevs, errbuff) == -1){ // find the devices 
         fprintf(stderr, "Could not find device: %s\n", errbuff);
@@ -34,8 +19,56 @@ int finder(){
     return 0;
 }
 
+void controlc(u_char *args, int signal){
+    (void)args;
+}
+
+void detectsyn(struct in_addr src, u_short dport, time_t now){
+    int out, index, i;
+    out = 1, index = -1, i = 0;
+    char buf[INET_ADDRSTRLEN];
+    const char *source = inet_ntop(AF_INET, &src, buf, sizeof(buf)); // source ip addr
+    for(; (i < nentries) && (out == 1); i ++){ //fixated window
+        if(src.s_addr == syntable[i].addr.s_addr) {
+            index = i;
+            out = 0;
+        }    
+    }
+    if(index == -1){
+        if(nentries >= MAX_ENTRIES) return;
+        index = nentries;
+        syntable[nentries].addr.s_addr = src.s_addr;
+        syntable[index].nports = 0;
+        syntable[index].start = now;
+        nentries ++;
+    }
+
+    if(now - syntable[index].start > WINDOW_SECS){
+        syntable[index].start = now;
+        syntable[index].nports = 0;
+    }
+
+    int f = 0;
+    for(; f < syntable[index].nports && (syntable[index].ports[f] != dport); f++);
+    if(f == syntable[index].nports){
+            if(syntable[index].nports >= MAX_PORTS) return;
+            syntable[index].ports[syntable[index].nports] = dport;
+            syntable[index].nports ++;
+            if(syntable[index].nports > THRESHOLD){
+                fprintf(stderr, "Number of ports threshold has been exceded.\n");
+                return;
+            }
+            const char *source = inet_ntop(AF_INET, &src, buf, sizeof(buf)); // source ip addr
+            if(source == NULL){
+                fprintf(stderr, "[SYN] Source ip is not defined.\n");
+            }
+            fprintf(stdout, "ALERT: possible SYN detection from <%s> (%d ports in %d seconds)\n", source, syntable[index].nports, WINDOW_SECS);
+            fflush(stdout);
+        }
+}
+
 // handtcp, handudp, handicmp are algorithms that identify and handle the packet communication protocol
-void handtcp(const u_char *segment, bpf_u_int32 len){ 
+void handtcp(const struct in_addr src, u_char *segment, bpf_u_int32 len, time_t now){ 
     if(len < sizeof(struct tcphdr)){
         fprintf(stderr, "TCP Length Error\n");
         return;
@@ -45,9 +78,11 @@ void handtcp(const u_char *segment, bpf_u_int32 len){
     fprintf(stdout, "TCP Src Port: %u\n", ntohs(t->th_sport));
     fprintf(stdout, "TCP Dst Port: %u\n", ntohs(t->th_dport));
 
-    //if((t->th_flags & TH_SYN) && !(t->th_flags & TH_ACK)) fprintf(stdout, "SYNNOACK: %u\n", t->th_flags);
+    if((t->th_flags & TH_SYN) && !(t->th_flags & TH_ACK)){
+        detectsyn(src, ntohs(t->th_dport), now);
+    }
 
-    if(t->th_flags & TH_SYN) fprintf(stdout, "SYN: %u\n", t->th_flags);
+    //if(t->th_flags & TH_SYN) fprintf(stdout, "SYN: %u\n", t->th_flags);
 
     if(t->th_flags & TH_FIN) fprintf(stdout, "FIN: %u\n", t->th_flags);
 
@@ -115,7 +150,7 @@ void gotpacket(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
             if(ipaddr->ip_p == IPPROTO_TCP){
                 u_int offset = sizeof(struct ether_header) + ipaddr->ip_hl * 4; // verify on the addr if the caplen and hl are enough to handle the protocol. otherwise we wouldn't be able to identify the protocol
                 if((ipaddr->ip_hl >= 5) && header->caplen >= offset){
-                    handtcp(packet + offset, header->caplen - offset);
+                    handtcp(ipaddr->ip_src, packet + offset, header->caplen - offset, header->ts.tv_sec);
                 } else if(!(ipaddr->ip_hl >= 5)){
                     fprintf(stderr, "Length might not be enough\n");
                     return;

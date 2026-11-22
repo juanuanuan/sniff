@@ -9,7 +9,7 @@ SRC = sniffer.c
 
 all: $(TARGET)
 
-$(TARGET): $(SRC)
+$(TARGET): $(SRC) lib.h
 	@mkdir -p bin
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
 
